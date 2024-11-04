@@ -26,7 +26,6 @@
 ;;
 ;; This package can be configured as follows:
 ;;
-;;   (require 'exwm-xsettings)
 ;;   (setq exwm-xsettings-theme '("Adwaita" . "Adwaita-dark") ;; light/dark
 ;;         exwm-xsettings `(("Xft/HintStyle" . "hintslight")
 ;;                          ("Xft/RGBA" . "rgb")
@@ -37,7 +36,7 @@
 ;;                          ;; (144 = 1.5 * 96).
 ;;                          ("Xft/DPI" . ,(* 144 1024))
 ;;                          ("Xft/Hinting" . 1)))
-;;   (exwm-xsettings-enable)
+;;   (exwm-xsettings-mode 1)
 ;;
 ;; To modify these settings at runtime, customize them with
 ;; `custom-set-variables' or `setopt' (Emacs 29+).  E.g., the following will
@@ -52,11 +51,28 @@
 (require 'xcb-xsettings)
 (require 'exwm-core)
 
+(defgroup exwm-xsettings nil
+  "XSETTINGS."
+  :group 'exwm)
+
 (defvar exwm-xsettings--connection nil)
 (defvar exwm-xsettings--XSETTINGS_SETTINGS-atom nil)
 (defvar exwm-xsettings--XSETTINGS_S0-atom nil)
 (defvar exwm-xsettings--selection-owner-window nil)
 (defvar exwm-xsettings--serial 0)
+
+;;;###autoload
+(define-minor-mode exwm-xsettings-mode
+  "Toggle EXWM xsettings support."
+  :global t
+  :group 'exwm-xsettings
+  (exwm--global-minor-mode-body xsettings))
+
+(defun exwm-xsettings-enable ()
+  "Enable EXWM xsettings support."
+  (message "`exwm-xsettings-enable' is obsolete. Use `exwm-xsettings-mode' instead.")
+  (exwm-xsettings-mode 1))
+(make-obsolete 'exwm-xsettings-enable "Use `exwm-xsettings-mode' instead." "0.30")
 
 (defun exwm-xsettings--rgba-match (_widget value)
   "Return t if VALUE is a valid RGBA color."
@@ -67,11 +83,7 @@
 
 SYMBOL is the setting being updated and VALUE is the new value."
   (set-default-toplevel-value symbol value)
-  (exwm-xsettings--update-settings))
-
-(defgroup exwm-xsettings nil
-  "XSETTINGS."
-  :group 'exwm)
+  (when exwm-xsettings-mode (exwm-xsettings--update-settings)))
 
 (defcustom exwm-xsettings nil
   "Alist of custom XSETTINGS.
@@ -118,20 +130,6 @@ These settings take precedence over `exwm-xsettings-theme' and
   :initialize #'custom-initialize-default
   :set #'exwm-xsettings--custom-set)
 
-(defalias 'exwm-xsettings--color-dark-p
-  (if (eval-when-compile (< emacs-major-version 29))
-      ;; Borrowed from Emacs 29.
-      (lambda (rgb)
-        "Whether RGB is more readable against white than black."
-        (unless (<= 0 (apply #'min rgb) (apply #'max rgb) 1)
-          (error "RGB components %S not in [0,1]" rgb))
-        (let* ((r (expt (nth 0 rgb) 2.2))
-               (g (expt (nth 1 rgb) 2.2))
-               (b (expt (nth 2 rgb) 2.2))
-               (y (+ (* r 0.2126) (* g 0.7152) (* b 0.0722))))
-          (< y 0.325)))
-    'color-dark-p))
-
 (defun exwm-xsettings--pick-theme (theme)
   "Pick a light or dark theme from the given THEME.
 If THEME is a string, it's returned directly.
@@ -140,7 +138,7 @@ the default face's background color."
   (pcase theme
     ((cl-type string) theme)
     (`(,(cl-type string) . ,(cl-type string))
-     (if (exwm-xsettings--color-dark-p (color-name-to-rgb (face-background 'default)))
+     (if (color-dark-p (color-name-to-rgb (face-background 'default)))
          (cdr theme) (car theme)))
     (_ (error "Expected theme to be a string or a pair of strings"))))
 
@@ -227,7 +225,9 @@ SERIAL is a sequence number."
   "Initialize the XSETTINGS module."
   (exwm--log)
 
-  (cl-assert (not exwm-xsettings--connection))
+  ;; idempotent initialization
+  (when exwm-xsettings--connection
+    (cl-return-from exwm-xsettings--init))
 
   ;; Connect
   (setq exwm-xsettings--connection (xcb:connect))
@@ -324,12 +324,6 @@ SERIAL is a sequence number."
           exwm-xsettings--XSETTINGS_SETTINGS-atom nil
           exwm-xsettings--XSETTINGS_S0-atom nil
           exwm-xsettings--selection-owner-window nil)))
-
-(defun exwm-xsettings-enable ()
-  "Enable xsettings support for EXWM."
-  (exwm--log)
-  (add-hook 'exwm-init-hook #'exwm-xsettings--init)
-  (add-hook 'exwm-exit-hook #'exwm-xsettings--exit))
 
 (provide 'exwm-xsettings)
 

@@ -26,6 +26,7 @@
 
 ;;; Code:
 
+(require 'compat)
 (require 'kmacro)
 
 (require 'xcb)
@@ -38,12 +39,12 @@
   :group 'exwm)
 
 (defcustom exwm-debug-log-time-function #'exwm-debug-log-uptime
-  "Function used for generating timestamps in `exwm-debug' logs.
+  "Function used for generating timestamps in debug log.
 
 Here are some predefined candidates:
 `exwm-debug-log-uptime': Display the uptime of this Emacs instance.
 `exwm-debug-log-time': Display time of day.
-`nil': Disable timestamp."
+nil: Disable timestamp."
   :type `(choice (const :tag "Emacs uptime" ,#'exwm-debug-log-uptime)
                  (const :tag "Time of day" ,#'exwm-debug-log-time)
                  (const :tag "Off" nil)
@@ -82,6 +83,7 @@ Here are some predefined candidates:
 (defvar exwm-input--simulation-keys)
 (defvar exwm-input-line-mode-passthrough)
 (defvar exwm-input-prefix-keys)
+(defvar exwm-workspace--list)
 (declare-function exwm-input--fake-key "exwm-input.el" (event))
 (declare-function exwm-input--on-KeyPress-line-mode "exwm-input.el"
                   (key-press raw-data))
@@ -94,14 +96,18 @@ Here are some predefined candidates:
 (declare-function exwm-manage--kill-buffer-query-function "exwm-manage.el")
 (declare-function exwm-workspace-move-window "exwm-workspace.el"
                   (frame-or-index &optional id))
+(declare-function exwm-workspace-switch "exwm-workspace.el"
+                  (frame-or-index &optional force))
 
-(define-minor-mode exwm-debug
+(defvaralias 'exwm-debug 'exwm-debug-mode) ;; Not obsolete
+(define-minor-mode exwm-debug-mode
   "Debug-logging enabled if non-nil."
   :global t
   :group 'exwm-debug)
+(define-obsolete-function-alias 'exwm-debug #'exwm-debug-mode "0.30")
 
 (defmacro exwm--debug (&rest forms)
-  "Evaluate FORMS if mode `exwm-debug' is active."
+  "Evaluate FORMS if `exwm-debug-mode' is active."
   (when exwm-debug `(progn ,@forms)))
 
 (defmacro exwm--log (&optional format-string &rest objects)
@@ -229,6 +235,14 @@ If CONN is non-nil, use it instead of the value of the variable
       (setq ret-depth depth))
     (list ret-visual ret-depth ret-colormap)))
 
+(defun exwm--mode-name ()
+  "Mode name string used in `exwm-mode' buffers."
+  (let ((name "EXWM"))
+    (if (cl-some (lambda (i) (frame-parameter i 'exwm-urgency))
+                 exwm-workspace--list)
+        (propertize name 'face 'font-lock-warning-face)
+      name)))
+
 ;; Internal variables
 (defvar-local exwm--id nil)               ;window ID
 (defvar-local exwm--configurations nil)   ;initial configurations.
@@ -274,7 +288,7 @@ One of `line-mode' or `char-mode'.")
   (let ((map (make-sparse-keymap)))
     (define-key map "\C-c\C-d\C-l" #'xcb-debug:clear)
     (define-key map "\C-c\C-d\C-m" #'xcb-debug:mark)
-    (define-key map "\C-c\C-d\C-t" #'exwm-debug)
+    (define-key map "\C-c\C-d\C-t" #'exwm-debug-mode)
     (define-key map "\C-c\C-f" #'exwm-layout-set-fullscreen)
     (define-key map "\C-c\C-h" #'exwm-floating-hide)
     (define-key map "\C-c\C-k" #'exwm-input-release-keyboard)
@@ -311,7 +325,7 @@ One of `line-mode' or `char-mode'.")
 ;; Also, inactive entries should be disabled rather than hidden.
 (easy-menu-define exwm-mode-menu exwm-mode-map
   "Menu for `exwm-mode'."
-  '("EXWM"
+  `("EXWM"
     "---"
     "*General*"
     "---"
@@ -336,22 +350,20 @@ One of `line-mode' or `char-mode'.")
     ["Send key" exwm-input-send-next-key (eq exwm--input-mode 'line-mode)]
     ;; This is merely a reference.
     ("Send simulation key" :filter
-     (lambda (&rest _args)
-       (let (result)
-         (maphash
-          (lambda (key value)
-            (when (sequencep key)
-              (setq result (append result
-                                   `([
-                                      ,(format "Send '%s'"
-                                               (key-description value))
-                                      (lambda ()
-                                        (interactive)
-                                        (dolist (i ',value)
-                                          (exwm-input--fake-key i)))
-                                      :keys ,(key-description key)])))))
-          exwm-input--simulation-keys)
-         result)))
+     ,(lambda (&rest _args)
+        (let (result)
+          (maphash
+           (lambda (key value)
+             (when (sequencep key)
+               (setq result (append result
+                                    `([,(format "Send '%s'"
+                                                (key-description value))
+                                       ,(lambda ()
+                                          (interactive)
+                                          (mapc #'exwm-input--fake-key value))
+                                       :keys ,(key-description key)])))))
+           exwm-input--simulation-keys)
+          result)))
 
     ["Define global binding" exwm-input-set-key]
 
@@ -368,26 +380,20 @@ One of `line-mode' or `char-mode'.")
     ["Switch workspace" exwm-workspace-switch]
     ;; Place this entry at bottom to avoid selecting others by accident.
     ("Switch to" :filter
-     (lambda (&rest _args)
-       (mapcar (lambda (i)
-                 `[,(format "Workspace %d" i)
-                   (lambda ()
-                     (interactive)
-                     (exwm-workspace-switch ,i))
-                   (/= ,i exwm-workspace-current-index)])
-               (number-sequence 0 (1- (exwm-workspace--count))))))))
+     ,(lambda (&rest _args)
+        (mapcar (lambda (i)
+                  `[,(format "Workspace %d" i)
+                    ,(lambda ()
+                       (interactive)
+                       (exwm-workspace-switch i))
+                    (/= ,i exwm-workspace-current-index)])
+                (number-sequence 0 (1- (length exwm-workspace--list))))))))
 
 (define-derived-mode exwm-mode nil "EXWM"
   "Major mode for managing X windows.
 
 \\{exwm-mode-map}"
-  ;;
-  (setq mode-name
-        '(:eval (propertize "EXWM" 'face
-                            (when (cl-some (lambda (i)
-                                             (frame-parameter i 'exwm-urgency))
-                                           exwm-workspace--list)
-                              'font-lock-warning-face))))
+  :interactive nil :abbrev-table nil :syntax-table nil
   ;; Change major-mode is not allowed
   (add-hook 'change-major-mode-hook #'kill-buffer nil t)
   ;; Kill buffer -> close window
@@ -396,13 +402,41 @@ One of `line-mode' or `char-mode'.")
   ;; Redirect events when executing keyboard macros.
   (push `(executing-kbd-macro . ,exwm--kmacro-map)
         minor-mode-overriding-map-alist)
-  (setq buffer-read-only t
+  (make-local-variable 'mode-line-position)
+  (setq mode-name '(:eval (exwm--mode-name))
+        buffer-read-only t
         cursor-type nil
         left-margin-width nil
         right-margin-width nil
         left-fringe-width 0
         right-fringe-width 0
-        vertical-scroll-bar nil))
+        vertical-scroll-bar nil
+        eldoc-documentation-functions nil
+        mode-line-position nil
+        mode-line-modified nil
+        mode-line-mule-info nil
+        mode-line-remote nil))
+
+(defmacro exwm--global-minor-mode-body (name &optional init exit)
+  "Global minor mode body for mode with NAME.
+The INIT and EXIT functions are added to `exwm-init-hook' and
+`exwm-exit-hook' respectively.  If an X connection exists, the mode is
+immediately enabled or disabled."
+  (declare (indent 1) (debug t))
+  (let* ((mode (intern (format "exwm-%s-mode" name)))
+         (init (or init (intern (format "exwm-%s--init" name))))
+         (exit (or exit (intern (format "exwm-%s--exit" name)))))
+    `(progn
+       (exwm--log)
+       (cond
+        (,mode
+         (add-hook 'exwm-init-hook #',init)
+         (add-hook 'exwm-exit-hook #',exit)
+         (when exwm--connection (,init)))
+        (t
+         (remove-hook 'exwm-init-hook #',init)
+         (remove-hook 'exwm-exit-hook #',exit)
+         (when exwm--connection (,exit)))))))
 
 
 

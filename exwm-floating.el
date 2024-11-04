@@ -67,11 +67,11 @@ This hook runs in the context of the corresponding buffer."
 
 (defcustom exwm-floating-border-width 1
   "Border width of floating windows."
-  :type '(integer
-          :validate (lambda (widget)
-                      (when (< (widget-value widget) 0)
-                        (widget-put widget :error "Border width is at least 0")
-                        widget)))
+  :type `(integer
+          :validate ,(lambda (widget)
+                       (when (< (widget-value widget) 0)
+                         (widget-put widget :error "Border width is at least 0")
+                         widget)))
   :initialize #'custom-initialize-default
   :set (lambda (symbol value)
          (let ((delta (- value exwm-floating-border-width))
@@ -125,13 +125,14 @@ This hook runs in the context of the corresponding buffer."
 (declare-function exwm-workspace--update-offsets "exwm-workspace.el" ())
 (declare-function exwm-workspace--workarea "exwm-workspace.el" (frame))
 
-(defun exwm-floating--set-allowed-actions (id tilling)
-  "Set _NET_WM_ALLOWED_ACTIONS."
+(defun exwm-floating--set-allowed-actions (id tiled-p)
+  "Set _NET_WM_ALLOWED_ACTIONS for window with ID.
+If TILED-P is non-nil, set actions for tiled window."
   (exwm--log "#x%x" id)
   (xcb:+request exwm--connection
       (make-instance 'xcb:ewmh:set-_NET_WM_ALLOWED_ACTIONS
                      :window id
-                     :data (if tilling
+                     :data (if tiled-p
                                (vector xcb:Atom:_NET_WM_ACTION_MINIMIZE
                                        xcb:Atom:_NET_WM_ACTION_FULLSCREEN
                                        xcb:Atom:_NET_WM_ACTION_CHANGE_DESKTOP
@@ -350,6 +351,8 @@ This hook runs in the context of the corresponding buffer."
       (set-window-buffer window (current-buffer)) ;this changes current buffer
       (add-hook 'window-configuration-change-hook #'exwm-layout--refresh)
       (set-window-dedicated-p window t)
+      (set-window-parameter window 'split-window
+                            (lambda (&rest _) (user-error "Floating window cannot be split")))
       (exwm-layout--show id window))
     (with-current-buffer (exwm--id->buffer id)
       (if (exwm-layout--iconic-state-p id)
@@ -466,7 +469,9 @@ This hook runs in the context of the corresponding buffer."
     (select-frame-set-input-focus exwm-workspace--current)))
 
 (defun exwm-floating--start-moveresize (id &optional type)
-  "Start move/resize."
+  "Start move/resize for window with ID.
+When non-nil, TYPE indicates the type of move/resize.
+Float resizing is stopped when TYPE is nil."
   (exwm--log "#x%x" id)
   (let ((buffer-or-id (or (exwm--id->buffer id) id))
         frame container-or-id x y width height cursor)
@@ -672,7 +677,7 @@ This hook runs in the context of the corresponding buffer."
     (setq exwm-floating--moveresize-calculate nil)))
 
 (defun exwm-floating--do-moveresize (data _synthetic)
-  "Perform move/resize."
+  "Perform move/resize on floating window with DATA."
   (when exwm-floating--moveresize-calculate
     (let* ((obj (make-instance 'xcb:MotionNotify))
            result value-mask x y width height buffer-or-id container-or-id)
@@ -707,17 +712,28 @@ This hook runs in the context of the corresponding buffer."
                          :height height))
       (when (bufferp buffer-or-id)
         ;; Managed.
-        (setq value-mask (logand value-mask (logior xcb:ConfigWindow:Width
-                                                    xcb:ConfigWindow:Height)))
-        (when (/= 0 value-mask)
-          (with-current-buffer buffer-or-id
+        (with-current-buffer buffer-or-id
+          (let ((resize-value-mask
+                 (logand value-mask (logior xcb:ConfigWindow:Width
+                                            xcb:ConfigWindow:Height)))
+                (move-value-mask
+                 (logand value-mask (logior xcb:ConfigWindow:X
+                                            xcb:ConfigWindow:Y))))
+          (when (/= 0 resize-value-mask)
             (xcb:+request exwm--connection
                 (make-instance 'xcb:ConfigureWindow
                                :window (frame-parameter exwm--floating-frame
                                                         'exwm-outer-id)
-                               :value-mask value-mask
+                               :value-mask resize-value-mask
                                :width width
-                               :height height)))))
+                               :height height)))
+          (when (/= 0 move-value-mask)
+            (xcb:+request exwm--connection
+                (make-instance 'xcb:ConfigureWindow
+                               :window exwm--id
+                               :value-mask move-value-mask
+                               :x (+ x exwm-floating-border-width)
+                               :y (+ y exwm-floating-border-width)))))))
       (xcb:flush exwm--connection))))
 
 (defun exwm-floating-move (&optional delta-x delta-y)

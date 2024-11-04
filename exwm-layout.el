@@ -245,17 +245,17 @@ See variable `exwm-layout-auto-iconify'."
       (exwm-input--grab-keyboard exwm--id))))
 
 ;;;###autoload
-(cl-defun exwm-layout-toggle-fullscreen (&optional id)
-  "Toggle fullscreen mode of X window ID."
-  (interactive (list (exwm--buffer->id (window-buffer))))
-  (exwm--log "id=#x%x" (or id 0))
-  (unless (or id (derived-mode-p 'exwm-mode))
-    (cl-return-from exwm-layout-toggle-fullscreen))
-  (when id
-    (with-current-buffer (exwm--id->buffer id)
-      (if (exwm-layout--fullscreen-p)
-          (exwm-layout-unset-fullscreen id)
-        (exwm-layout-set-fullscreen id)))))
+(defun exwm-layout-toggle-fullscreen (&optional id)
+  "Toggle fullscreen mode of X window ID.
+If ID is non-nil, default to ID of `window-buffer'."
+  (interactive)
+  (setq id (or id (exwm--buffer->id (current-buffer))
+               (user-error "Current buffer has no X window ID")))
+  (exwm--log "id=#x%x" id)
+  (with-current-buffer (exwm--id->buffer id)
+    (if (exwm-layout--fullscreen-p)
+        (exwm-layout-unset-fullscreen id)
+      (exwm-layout-set-fullscreen id))))
 
 (defun exwm-layout--other-buffer-predicate (buffer)
   "Return non-nil when the BUFFER may be displayed in selected frame.
@@ -602,9 +602,7 @@ See also `exwm-layout-enlarge-window'."
   ;; Auto refresh layout
   (exwm--log)
   (add-hook 'window-configuration-change-hook #'exwm-layout--refresh)
-  ;; The behavior of `window-configuration-change-hook' will be changed.
-  (when (fboundp 'window-pixel-width-before-size-change)
-    (add-hook 'window-size-change-functions #'exwm-layout--refresh))
+  (add-hook 'window-size-change-functions #'exwm-layout--refresh)
   (unless (exwm-workspace--minibuffer-own-frame-p)
     ;; Refresh when minibuffer grows
     (add-hook 'minibuffer-setup-hook #'exwm-layout--on-minibuffer-setup t)
@@ -616,8 +614,7 @@ See also `exwm-layout-enlarge-window'."
   "Exit the layout module."
   (exwm--log)
   (remove-hook 'window-configuration-change-hook #'exwm-layout--refresh)
-  (when (fboundp 'window-pixel-width-before-size-change)
-    (remove-hook 'window-size-change-functions #'exwm-layout--refresh))
+  (remove-hook 'window-size-change-functions #'exwm-layout--refresh)
   (remove-hook 'minibuffer-setup-hook #'exwm-layout--on-minibuffer-setup)
   (when exwm-layout--timer
     (cancel-timer exwm-layout--timer)
